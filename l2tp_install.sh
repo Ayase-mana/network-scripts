@@ -3,7 +3,7 @@
 # L2TP VPN 自动安装脚本 - 优化版
 # 支持系统: CentOS 7+ / Debian 9+ / Ubuntu 18.04+ / RHEL 7+ / AlmaLinux 8+ / Rocky Linux 8+
 # 原作者: Teddysun
-# 优化者: ayuya_mana（https://blog.csdn.net/weixin_44149170）
+# 优化者: ayuya_mana
 # 功能: 自动安装和配置L2TP/IPSec VPN服务器
 # =============================================================================
 
@@ -281,7 +281,6 @@ check_installation_status() {
     local ipsec_installed=false
     local xl2tpd_installed=false
     local kernel_configured=false
-    local firewall_configured=false
     local selinux_configured=false
     
     # 检查IPSec
@@ -299,8 +298,28 @@ check_installation_status() {
         kernel_configured=true
     fi
     
-    # 检查SELinux
-    if command -v getsebool >/dev/null 2>&1 && getsebool daemons_enable_cluster_mode | grep -q "on" 2>/dev/null; then
+    # 检查SELinux状态 - 修复部分
+    if command -v getenforce >/dev/null 2>&1; then
+        selinux_status=$(getenforce)
+        if [[ "$selinux_status" == "Enforcing" ]]; then
+            # SELinux处于强制模式，需要检查相关设置
+            if command -v getsebool >/dev/null 2>&1; then
+                # 检查必要的SELinux布尔值
+                if getsebool daemons_enable_cluster_mode 2>/dev/null | grep -q "on"; then
+                    selinux_configured=true
+                else
+                    selinux_configured=false
+                fi
+            else
+                # 无法检查SELinux布尔值，但SELinux是强制模式，认为未配置
+                selinux_configured=false
+            fi
+        else
+            # SELinux不是强制模式（Disabled或Permissive），认为已配置
+            selinux_configured=true
+        fi
+    else
+        # 系统没有SELinux，认为已配置
         selinux_configured=true
     fi
     
@@ -319,7 +338,18 @@ check_installation_status() {
         $ipsec_installed && echo -e "  IPSec: ${GREEN}✓${NC}" || echo -e "  IPSec: ${RED}✗${NC}"
         $xl2tpd_installed && echo -e "  XL2TPD: ${GREEN}✓${NC}" || echo -e "  XL2TPD: ${RED}✗${NC}"
         $kernel_configured && echo -e "  内核参数: ${GREEN}✓${NC}" || echo -e "  内核参数: ${RED}✗${NC}"
-        $selinux_configured && echo -e "  SELinux: ${GREEN}✓${NC}" || echo -e "  SELinux: ${RED}✗${NC}"
+        
+        # 显示SELinux状态
+        if command -v getenforce >/dev/null 2>&1; then
+            selinux_status=$(getenforce)
+            if [[ "$selinux_status" == "Enforcing" ]]; then
+                $selinux_configured && echo -e "  SELinux: ${GREEN}✓${NC}" || echo -e "  SELinux: ${RED}✗${NC}"
+            else
+                echo -e "  SELinux: ${GREEN}✓ (已禁用/宽容模式)${NC}"
+            fi
+        else
+            echo -e "  SELinux: ${GREEN}✓ (未安装)${NC}"
+        fi
     fi
     echo
 }
@@ -807,8 +837,8 @@ configure_selinux() {
     log_info "配置SELinux策略..."
     
     # 检查SELinux是否启用
-    if ! getenforce | grep -q "Enforcing"; then
-        log_info "SELinux未启用，跳过SELinux配置"
+    if ! command -v getenforce >/dev/null 2>&1 || [[ "$(getenforce)" != "Enforcing" ]]; then
+        log_info "SELinux未启用或处于宽容模式，跳过SELinux配置"
         return 0
     fi
     
@@ -920,8 +950,8 @@ verify_installation() {
     fi
     
     # 检查SELinux状态
-    if getenforce | grep -q "Enforcing"; then
-        if getsebool daemons_enable_cluster_mode | grep -q "on"; then
+    if command -v getenforce >/dev/null 2>&1 && [[ "$(getenforce)" == "Enforcing" ]]; then
+        if command -v getsebool >/dev/null 2>&1 && getsebool daemons_enable_cluster_mode | grep -q "on"; then
             log_success "SELinux策略配置正确"
         else
             log_warn "SELinux布尔值未正确设置"
@@ -1107,7 +1137,11 @@ show_status() {
     fi
     
     # 显示SELinux状态
-    echo "SELinux 状态: $(getenforce)"
+    if command -v getenforce >/dev/null 2>&1; then
+        echo "SELinux 状态: $(getenforce)"
+    else
+        echo "SELinux 状态: 未安装"
+    fi
     
     echo
 }
